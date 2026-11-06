@@ -358,6 +358,10 @@ chrome.runtime.onConnect.addListener(function (port) {
                   role: "user",
                   content: [
                     {
+                      type: "text",
+                      text: `Analyze the question and answer-entry interface in the attached image. Detected answer layout, in DOM order: ${JSON.stringify(dataUrlResponse.answerLayout || [])}. Use the image and this layout together; provide one exact, box-ready expression for each answer blank in the listed order.`,
+                    },
+                    {
                       type: "image_url",
                       image_url: {
                         url: `data:image/png;base64,${base64ImageData}`,
@@ -559,6 +563,10 @@ async function captureAndProcessScreenshot(sendResponse) {
           {
             role: "user",
             content: [
+              {
+                type: "text",
+                text: "Analyze both the question and visible answer-entry interface in the attached screenshot. Identify the answer blanks and provide one exact, box-ready expression per blank in reading order.",
+              },
               {
                 type: "image_url",
                 image_url: {

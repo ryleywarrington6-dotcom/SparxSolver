@@ -2006,6 +2006,42 @@ async function runAutoSolvePageFlow(finalAnswer) {
     );
   }
 
+  function findQuestionAndAnswerContentElement() {
+    let container = findQuestionContentElement();
+    const answerElements = getOrderedAnswerItems(false)
+      .map((item) => item.fieldContainer || item.input || item.answerPart || item.target || item.slot || item.choices?.[0])
+      .filter(Boolean);
+
+    while (container && answerElements.some((element) => !container.contains(element))) {
+      container = container.parentElement;
+    }
+
+    return container || findQuestionContentElement();
+  }
+
+  function describeAnswerLayout() {
+    return getOrderedAnswerItems(false).map((item, index) => {
+      const target = item.fieldContainer || item.input || item.answerPart || item.target || item.slot || item.choices?.[0];
+      const bounds = target?.getBoundingClientRect();
+      const answerPart = item.answerPart || item.input?.closest("[class*='AnswerPart']") || item.target?.parentElement;
+      const nearbyText = (answerPart?.innerText || answerPart?.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+
+      return {
+        order: index + 1,
+        type: item.type,
+        placeholder: item.input?.getAttribute("placeholder") || "",
+        ariaLabel: item.input?.getAttribute("aria-label") || "",
+        nearbyText,
+        x: bounds ? Math.round(bounds.x) : null,
+        y: bounds ? Math.round(bounds.y) : null,
+        choiceCount: item.choices?.length || 0,
+      };
+    });
+  }
+
   function hasVisibleAnswerControls() {
     const isVisible = (element) => {
       if (!element?.isConnected || !element.getClientRects().length) return false;
@@ -2065,11 +2101,12 @@ async function runAutoSolvePageFlow(finalAnswer) {
           return;
         }
 
-        const questionEl = findQuestionContentElement();
+        const questionEl = findQuestionAndAnswerContentElement();
         if (!questionEl) {
           sendResponse({ error: "Question element not found." });
           return;
         }
+        const answerLayout = describeAnswerLayout();
         window
           .html2canvas(questionEl, {
             scale: window.devicePixelRatio * 2,
@@ -2078,7 +2115,7 @@ async function runAutoSolvePageFlow(finalAnswer) {
           })
           .then((canvas) => {
             const dataUrl = canvas.toDataURL();
-            sendResponse({ dataUrl });
+            sendResponse({ dataUrl, answerLayout });
           })
           .catch((e) => {
             sendResponse({ error: e.message });
