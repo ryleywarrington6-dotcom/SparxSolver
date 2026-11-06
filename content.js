@@ -1560,7 +1560,13 @@ async function clickSummaryAndNextTask() {
   return false;
 }
 
-async function clickKeepGoing(initialControl = null) {
+function clickKeepGoing(initialControl = null) {
+  if (keepGoingActivationPromise) {
+    console.info("[SparxSolver] Keep Going activation is already running; joining it.");
+    return keepGoingActivationPromise;
+  }
+
+  const activationPromise = (async () => {
   let keepGoingControl = initialControl?.isConnected
     ? initialControl
     : await waitForActionControl("keep going", 2500);
@@ -1611,6 +1617,12 @@ async function clickKeepGoing(initialControl = null) {
 
   console.error("[SparxSolver] Could not dismiss the Keep Going prompt after 3 activation attempts.");
   return false;
+  })();
+
+  keepGoingActivationPromise = activationPromise.finally(() => {
+    keepGoingActivationPromise = null;
+  });
+  return keepGoingActivationPromise;
 }
 
 function clickBookworkDidntPrompt() {
@@ -1794,7 +1806,9 @@ async function runAutoSolvePageFlow(finalAnswer) {
   let isIframeVisible = false;
   let bodyPointerEventsObserver = null;
   let autoBookworkRunInProgress = false;
+  let keepGoingActivationPromise = null;
   let bookworkObserverTimer = null;
+  let keepGoingAutoClickTimer = null;
 
   function getSolverIframe() {
     return iframe || document.getElementById(IFRAME_ID);
@@ -1983,6 +1997,22 @@ async function runAutoSolvePageFlow(finalAnswer) {
     }, delay);
   }
 
+  function scheduleAutomaticKeepGoingClick(delay = 100) {
+    clearTimeout(keepGoingAutoClickTimer);
+    keepGoingAutoClickTimer = setTimeout(async () => {
+      const settings = await new Promise((resolve) => {
+        chrome.storage.local.get(["autoSolveEnabled", "autoBookworkEnabled"], resolve);
+      });
+      if (!settings.autoSolveEnabled && !settings.autoBookworkEnabled) return;
+
+      const keepGoingControl = findActionControlByText("keep going");
+      if (!keepGoingControl) return;
+
+      console.info("[SparxSolver] Keep Going detected by page observer; auto-activating.");
+      await clickKeepGoing(keepGoingControl);
+    }, delay);
+  }
+
  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "toggle_ui") {
     console.log("[SparxSolver] Toggle UI message received.");
@@ -2056,18 +2086,24 @@ async function runAutoSolvePageFlow(finalAnswer) {
   // Add this near the bottom of content.js where your event listeners live
   // Add this near the bottom of content.js
   chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.autoBookworkEnabled) {
-    const isBookworkEnabled = changes.autoBookworkEnabled.newValue;
-    console.log(`[SparxSolver] Auto-Bookwork toggle turned ${isBookworkEnabled ? "ON" : "OFF"}`);
-    
-    // If turned ON, dynamically kick off the sequence right now
-    if (isBookworkEnabled) {
-      scheduleBookworkPageRefresh(0);
+  if (areaName === "local") {
+    if (changes.autoSolveEnabled?.newValue || changes.autoBookworkEnabled?.newValue) {
+      scheduleAutomaticKeepGoingClick(0);
+    }
+
+    if (changes.autoBookworkEnabled) {
+      const isBookworkEnabled = changes.autoBookworkEnabled.newValue;
+      console.log(`[SparxSolver] Auto-Bookwork toggle turned ${isBookworkEnabled ? "ON" : "OFF"}`);
+
+      if (isBookworkEnabled) {
+        scheduleBookworkPageRefresh(0);
+      }
     }
   }
 });
 
   const bookworkPageObserver = new MutationObserver(() => {
+    scheduleAutomaticKeepGoingClick(100);
     if (autoBookworkRunInProgress) {
       return;
     }
@@ -2079,6 +2115,8 @@ async function runAutoSolvePageFlow(finalAnswer) {
     childList: true,
     subtree: true,
   });
+
+  scheduleAutomaticKeepGoingClick(0);
 
 
   // Listen for screenshot request from background.js
