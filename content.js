@@ -988,6 +988,104 @@ async function typeIntoNumericInput(input, value) {
     : String(input.textContent || "").trim();
 }
 
+function normalizeAnswerKeyLabel(value) {
+  return String(value || "")
+    .replace(/[−–]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/^(key|digit)\s+/, "")
+    .replace(/\s+(key|button)$/, "");
+}
+
+function findAnswerKeyControl(token) {
+  const aliases = {
+    "π": ["π", "pi", "pi symbol"],
+    "×": ["×", "multiply", "times"],
+    "-": ["-", "minus", "negative"],
+    ".": [".", "decimal", "decimal point"],
+    "/": ["/", "÷", "divide", "fraction"],
+    "^": ["^", "power", "exponent"],
+    "(": ["(", "left parenthesis"],
+    ")": [")", "right parenthesis"],
+    backspace: ["backspace", "delete", "⌫", "←"],
+    clear: ["clear", "clear all", "clear entry"],
+  };
+  const expectedLabels = new Set((aliases[token] || [token]).map(normalizeAnswerKeyLabel));
+  const question = findQuestionContentElement() || document;
+  const selector = [
+    "button",
+    "[role='button']",
+    "[data-key]",
+    "[class*='Key']",
+    "[class*='key']",
+    "[class*='Button']",
+    "[class*='button']",
+  ].join(", ");
+
+  return [...question.querySelectorAll(selector)].find((control) => {
+    const style = window.getComputedStyle(control);
+    if (style.display === "none" || style.visibility === "hidden" || !control.getClientRects().length) {
+      return false;
+    }
+    const labels = [
+      control.innerText,
+      control.textContent,
+      control.getAttribute("aria-label"),
+      control.getAttribute("title"),
+      control.getAttribute("data-key"),
+      control.getAttribute("data-value"),
+    ];
+    return labels.some((label) => expectedLabels.has(normalizeAnswerKeyLabel(label)));
+  }) || null;
+}
+
+function getAnswerKeyTokens(value) {
+  return String(value)
+    .replace(/\$/g, "")
+    .replace(/\\(?:left|right)\b/g, "")
+    .replace(/\\pi\b/gi, "π")
+    .replace(/\bpi\b/gi, "π")
+    .replace(/\\(?:times|cdot)\b/g, "×")
+    .replace(/[{}\s]/g, "")
+    .split("")
+    .filter(Boolean);
+}
+
+async function enterAnswerWithKeypad(input, value) {
+  await clickIntoInput(input);
+
+  const clearControl = findAnswerKeyControl("clear");
+  const backspaceControl = findAnswerKeyControl("backspace");
+  if (clearControl) {
+    clearControl.click();
+  } else if (backspaceControl) {
+    for (let count = 0; count < 20; count++) {
+      backspaceControl.click();
+    }
+  } else {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+  }
+  await sleep(80);
+
+  const tokens = getAnswerKeyTokens(value);
+  for (const [index, token] of tokens.entries()) {
+    const keyControl = findAnswerKeyControl(token);
+    if (!keyControl) {
+      console.warn(`[SparxSolver] No on-screen keypad key found for token "${token}" at position ${index + 1}.`);
+      return "";
+    }
+    keyControl.click();
+    await sleep(60);
+  }
+
+  await sleep(120);
+  return "value" in input
+    ? String(input.value)
+    : String(input.textContent || "").trim();
+}
+
 async function typeNumericInput(input, value, fieldIndex = 0) {
   if (value == null) return false;
 
@@ -1005,8 +1103,13 @@ async function typeNumericInput(input, value, fieldIndex = 0) {
     } else {
       console.info(`[SparxSolver] Entering numeric field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}: ${expectedValue}`);
       try {
-        const actualValue = await typeIntoNumericInput(activeInput, expectedValue);
-        if (actualValue === expectedValue) {
+        let actualValue = await typeIntoNumericInput(activeInput, expectedValue);
+        if (actualValue !== expectedValue) {
+          console.info(`[SparxSolver] Native input was rejected for field ${fieldIndex + 1}; trying the Sparx keypad.`);
+          actualValue = await enterAnswerWithKeypad(activeInput, expectedValue);
+        }
+
+        if (normalizeAnswerKeyLabel(actualValue) === normalizeAnswerKeyLabel(expectedValue)) {
           console.info(`[SparxSolver] Verified numeric field ${fieldIndex + 1}: ${actualValue}`);
           return true;
         }
@@ -1141,12 +1244,23 @@ async function typeAnswer(finalAnswer) {
 
   let dynamicAnswer = finalAnswer;
   let numericFieldIndex = 0;
+  const numericItemCount = answerItems.filter((item) => item.type === "numeric").length;
+  const answerParts = String(finalAnswer)
+    .trim()
+    .replace(/^\$|\$$/g, "")
+    .split(/\s*,\s*/)
+    .filter(Boolean);
+  const hasOneAnswerPerNumericField = numericItemCount === answerItems.length &&
+    answerParts.length === numericItemCount;
 
   for (const item of answerItems) {
     switch (item.type) {
       case "numeric": {
-        const { value, remaining } = extractAndConsumeNumeric(dynamicAnswer);
         const currentFieldIndex = numericFieldIndex++;
+        const extracted = hasOneAnswerPerNumericField
+          ? { value: answerParts[currentFieldIndex], remaining: "" }
+          : extractAndConsumeNumeric(dynamicAnswer);
+        const { value, remaining } = extracted;
 
         if (!value) {
           console.error(`[SparxSolver] No numeric value found for field ${currentFieldIndex + 1}. Remaining answer:`, dynamicAnswer);
