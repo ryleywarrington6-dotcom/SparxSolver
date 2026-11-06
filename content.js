@@ -1518,7 +1518,7 @@ function findActionControlByText(text) {
   });
 
   for (const candidate of candidates) {
-    const interactiveAncestor = candidate.closest("button, a, [role='button'], [tabindex]");
+    const interactiveAncestor = candidate.closest("button, a, [role='button']");
     const target = interactiveAncestor || candidate;
     const style = window.getComputedStyle(target);
     const visible = style.display !== "none" && style.visibility !== "hidden" && target.getClientRects().length > 0;
@@ -1560,20 +1560,57 @@ async function clickSummaryAndNextTask() {
   return false;
 }
 
-async function clickKeepGoing() {
-  const keepGoingControl = await waitForActionControl("keep going", 2500);
-  if (!keepGoingControl) {
-    console.warn("[SparxSolver] Keep Going text was not found on a visible action element.");
-    return false;
+async function clickKeepGoing(initialControl = null) {
+  let keepGoingControl = initialControl?.isConnected
+    ? initialControl
+    : await waitForActionControl("keep going", 2500);
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!keepGoingControl?.isConnected) {
+      keepGoingControl = await waitForActionControl("keep going", 1000);
+    }
+    if (!keepGoingControl) break;
+
+    keepGoingControl.scrollIntoView({ block: "center", inline: "center" });
+    const bounds = keepGoingControl.getBoundingClientRect();
+    const eventOptions = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
+    };
+
+    console.info(`[SparxSolver] Activating Keep Going text target, attempt ${attempt}/3:`, {
+      tag: keepGoingControl.tagName,
+      className: String(keepGoingControl.className || ""),
+      text: (keepGoingControl.innerText || keepGoingControl.textContent || "").trim(),
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+    });
+
+    keepGoingControl.dispatchEvent(new PointerEvent("pointerdown", eventOptions));
+    keepGoingControl.dispatchEvent(new MouseEvent("mousedown", eventOptions));
+    keepGoingControl.dispatchEvent(new PointerEvent("pointerup", eventOptions));
+    keepGoingControl.dispatchEvent(new MouseEvent("mouseup", eventOptions));
+    keepGoingControl.dispatchEvent(new MouseEvent("click", eventOptions));
+
+    const start = Date.now();
+    while (Date.now() - start < 1000) {
+      await sleep(150);
+      const currentControl = findActionControlByText("keep going");
+      if (!currentControl || !currentControl.isConnected) {
+        console.info("[SparxSolver] Keep Going prompt disappeared after activation.");
+        return true;
+      }
+    }
+
+    console.warn(`[SparxSolver] Keep Going remained visible after attempt ${attempt}/3.`);
+    keepGoingControl = findActionControlByText("keep going");
   }
 
-  console.info("[SparxSolver] Clicking Keep Going action target:", {
-    tag: keepGoingControl.tagName,
-    className: String(keepGoingControl.className || ""),
-    text: (keepGoingControl.innerText || keepGoingControl.textContent || "").trim(),
-  });
-  keepGoingControl.click();
-  return true;
+  console.error("[SparxSolver] Could not dismiss the Keep Going prompt after 3 activation attempts.");
+  return false;
 }
 
 function clickBookworkDidntPrompt() {
@@ -1723,8 +1760,12 @@ async function runAutoSolvePageFlow(finalAnswer) {
     await clickSummaryAndNextTask();
   } else if (postSubmitAction?.type === "keep-going") {
     console.log("[SparxSolver] Keep Going control found.");
-    postSubmitAction.control.click();
-    await clickSummaryAndNextTask();
+    const clickedKeepGoing = await clickKeepGoing(postSubmitAction.control);
+    const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+    if (!advanced) {
+      handleAutoSolveFailure();
+      return;
+    }
   } else {
     const clickedKeepGoing = await clickKeepGoing();
     const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
@@ -1908,8 +1949,12 @@ async function runAutoSolvePageFlow(finalAnswer) {
         await clickSummaryAndNextTask();
       } else if (postSubmitAction?.type === "keep-going") {
         console.log("[SparxSolver] Keep Going control found.");
-        postSubmitAction.control.click();
-        await clickSummaryAndNextTask();
+        const clickedKeepGoing = await clickKeepGoing(postSubmitAction.control);
+        const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+        if (!advanced) {
+          console.warn("[SparxSolver] Keep Going prompt remained active; stopping bookwork navigation.");
+          return;
+        }
       } else {
         const clickedKeepGoing = await clickKeepGoing();
         const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
