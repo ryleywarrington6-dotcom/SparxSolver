@@ -241,6 +241,7 @@ function getOrderedAnswerItems(log = true) {
           type: "numeric",
           input,
           fieldContainer: input.closest("[class*='TextFieldNumeric']") || input,
+          answerPart: part,
           answerPartIndex: partIndex,
           answerPartFieldIndex: partFieldIndex,
         });
@@ -331,6 +332,20 @@ function getOrderedAnswerItems(log = true) {
   }
 
   return items;
+}
+
+function getStaticAnswerPartText(item) {
+  if (!item.answerPart) return "";
+
+  const clone = item.answerPart.cloneNode(true);
+  clone.querySelectorAll(
+    "input, textarea, button, [role='button'], [contenteditable='true'], [class*='TextFieldNumeric'], [class*='Keypad'], [class*='keypad']"
+  ).forEach((element) => element.remove());
+
+  return (clone.innerText || clone.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
 }
 
 /**
@@ -1296,11 +1311,20 @@ async function typeAnswer(finalAnswer) {
         const extracted = hasOneAnswerPerNumericField
           ? { value: answerParts[currentFieldIndex], remaining: "" }
           : extractAndConsumeNumeric(dynamicAnswer);
-        const { value, remaining } = extracted;
+        let { value } = extracted;
+        const { remaining } = extracted;
 
         if (!value) {
           console.error(`[SparxSolver] No numeric value found for field ${currentFieldIndex + 1}. Remaining answer:`, dynamicAnswer);
           return false;
+        }
+
+        const coefficientWithPi = String(value).match(/^(-?\d+(?:\.\d+)?)\s*(?:\\pi|π)$/i);
+        const staticPartText = getStaticAnswerPartText(item);
+        if (coefficientWithPi && /π|\\pi\b/i.test(staticPartText) &&
+            (item.input.readOnly || item.input.getAttribute("pattern"))) {
+          console.info(`[SparxSolver] Answer part ${item.answerPartIndex + 1} has a numeric-only blank with fixed π nearby; entering coefficient ${coefficientWithPi[1]}.`);
+          value = coefficientWithPi[1];
         }
 
         const enteredAndVerified = await typeNumericInput(
@@ -2034,7 +2058,11 @@ async function runAutoSolvePageFlow(finalAnswer) {
         type: item.type,
         placeholder: item.input?.getAttribute("placeholder") || "",
         ariaLabel: item.input?.getAttribute("aria-label") || "",
-        nearbyText,
+        inputType: item.input?.getAttribute("type") || "",
+        inputMode: item.input?.getAttribute("inputmode") || "",
+        readOnly: Boolean(item.input?.readOnly),
+        pattern: item.input?.getAttribute("pattern") || "",
+        nearbyText: item.type === "numeric" ? getStaticAnswerPartText(item) || nearbyText : nearbyText,
         x: bounds ? Math.round(bounds.x) : null,
         y: bounds ? Math.round(bounds.y) : null,
         choiceCount: item.choices?.length || 0,
