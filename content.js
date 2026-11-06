@@ -204,7 +204,7 @@ function getOrderedAnswerItems(log = true) {
   const items = [];
 
   if (answerParts.length === 0) {
-    const mainContainer = document.querySelector("div[class*='QuestionWrapper']");
+    const mainContainer = findQuestionContentElement();
     if (mainContainer) {
       if (log) console.log("[SparxSolver] No AnswerPart elements found. Using main QuestionWrapper container.");
       answerParts = [mainContainer];
@@ -213,10 +213,27 @@ function getOrderedAnswerItems(log = true) {
 
   if (log) console.log("answerParts", answerParts);
 
+  const seenNumericInputs = new Set();
+  const numericFieldSelector = [
+    "[class*='TextFieldNumeric']",
+    "input[type='number']",
+    "input[inputmode='decimal']",
+    "input[inputmode='numeric']",
+    "input[placeholder*='number' i]",
+  ].join(", ");
+
   for (const part of answerParts) {
-    const numericInputs = [
-      ...part.querySelectorAll("input[class*='TextFieldNumeric']")
-    ];
+    const numericInputs = [...part.querySelectorAll(numericFieldSelector)]
+      .map((field) => field.matches("input, textarea")
+        ? field
+        : field.querySelector("input, textarea, [role='textbox'], [contenteditable='true']"))
+      .filter((input) => {
+        if (!input || seenNumericInputs.has(input)) return false;
+        const style = window.getComputedStyle(input);
+        const visible = style.display !== "none" && style.visibility !== "hidden" && input.getClientRects().length > 0;
+        if (visible) seenNumericInputs.add(input);
+        return visible;
+      });
 
     if (numericInputs.length) {
       for (const input of numericInputs) {
@@ -980,6 +997,18 @@ async function typeNumericInput(input, value) {
  * @returns {object} An object containing the matched numeric 'value' and the updated 'remaining' text.
  */
 function extractAndConsumeNumeric(currentText) {
+  const scientificMatch = currentText.match(
+    /(-?\d+(?:\.\d+)?)\s*(?:\\times|×|\\cdot|·)\s*10\s*\^\s*\{\s*(-?\d+)\s*\}/i
+  );
+
+  if (scientificMatch) {
+    const expressionEnd = scientificMatch.index + scientificMatch[0].length;
+    const remaining = currentText.slice(0, scientificMatch.index) +
+      scientificMatch[2] +
+      currentText.slice(expressionEnd);
+    return { value: scientificMatch[1], remaining };
+  }
+
   const match = currentText.match(/(?<!\^)-?\d+(\.\d+)?(?!\w)/);
   if (!match) {
     return { value: null, remaining: currentText };
