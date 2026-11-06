@@ -285,7 +285,8 @@ function getOrderedAnswerItems(log = true) {
       }
     }
 
-    const multipleChoiceButtons = hasDragDrop ? [] : [
+    const hasNumericInputs = numericInputs.length > 0;
+    const multipleChoiceButtons = hasDragDrop || hasNumericInputs ? [] : [
       ...part.querySelectorAll('div[role="button"]')
     ].filter(choice => !choice.querySelector("img"));
 
@@ -297,7 +298,7 @@ function getOrderedAnswerItems(log = true) {
       });
     }
 
-    const imageChoices = hasDragDrop ? [] : [
+    const imageChoices = hasDragDrop || hasNumericInputs ? [] : [
       ...part.querySelectorAll('div[role="button"]')
     ].filter(choice => choice.querySelector("img"));
 
