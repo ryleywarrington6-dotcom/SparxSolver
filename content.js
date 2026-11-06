@@ -236,11 +236,13 @@ function getOrderedAnswerItems(log = true) {
       });
 
     if (numericInputs.length) {
-      for (const input of numericInputs) {
+      for (const [partFieldIndex, input] of numericInputs.entries()) {
         items.push({
           type: "numeric",
           input,
+          fieldContainer: input.closest("[class*='TextFieldNumeric']") || input,
           answerPartIndex: partIndex,
+          answerPartFieldIndex: partFieldIndex,
         });
       }
     }
@@ -949,22 +951,31 @@ async function recognizeImageChoiceAnswer(answerPart, finalAnswer) {
   return { recognizedOnly: false, choiceIndex };
 }
 
-async function clickIntoInput(input) {
-  input.scrollIntoView({ block: "center", inline: "center" });
+async function clickIntoInput(input, fieldContainer = input) {
+  const target = fieldContainer?.isConnected ? fieldContainer : input;
+  target.scrollIntoView({ block: "center", inline: "center" });
+  const bounds = target.getBoundingClientRect();
+  const eventPosition = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    clientX: bounds.left + bounds.width / 2,
+    clientY: bounds.top + bounds.height / 2,
+  };
+
+  target.dispatchEvent(new PointerEvent("pointerdown", eventPosition));
+  target.dispatchEvent(new MouseEvent("mousedown", eventPosition));
+  target.dispatchEvent(new MouseEvent("mouseup", eventPosition));
+  target.dispatchEvent(new MouseEvent("click", eventPosition));
   input.focus({ preventScroll: true });
 
-  input.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-
   const focused = document.activeElement === input;
-  console.info(`[SparxSolver] Focus requested for answer field; active element matches: ${focused}.`, input);
+  console.info(`[SparxSolver] Activated answer-slot container; child input focused: ${focused}; slot position: ${Math.round(bounds.x)},${Math.round(bounds.y)}.`, target);
   return focused;
 }
 
-async function typeIntoNumericInput(input, value) {
-  await clickIntoInput(input);
+async function typeIntoNumericInput(input, value, fieldContainer = input) {
+  await clickIntoInput(input, fieldContainer);
   const expectedValue = String(value);
   let prototype = input;
   let valueSetter = null;
@@ -1054,8 +1065,8 @@ function getAnswerKeyTokens(value) {
     .filter(Boolean);
 }
 
-async function enterAnswerWithKeypad(input, value) {
-  await clickIntoInput(input);
+async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
+  await clickIntoInput(input, fieldContainer);
 
   const clearControl = findAnswerKeyControl("clear");
   const backspaceControl = findAnswerKeyControl("backspace");
@@ -1088,7 +1099,7 @@ async function enterAnswerWithKeypad(input, value) {
     : String(input.textContent || "").trim();
 }
 
-async function typeNumericInput(input, value, fieldIndex = 0, answerPartIndex = fieldIndex) {
+async function typeNumericInput(input, value, fieldIndex = 0, answerPartIndex = fieldIndex, answerPartFieldIndex = 0, fieldContainer = input) {
   if (value == null) return false;
 
   const expectedValue = String(value);
@@ -1098,22 +1109,26 @@ async function typeNumericInput(input, value, fieldIndex = 0, answerPartIndex = 
     const refreshedFields = getOrderedAnswerItems(false)
       .filter((item) => item.type === "numeric");
     const refreshedPartField = refreshedFields.find((item) =>
-      item.answerPartIndex === answerPartIndex
+      item.answerPartIndex === answerPartIndex &&
+      item.answerPartFieldIndex === answerPartFieldIndex
     );
     const activeInput = input.isConnected
       ? input
       : refreshedPartField?.input || null;
+    const activeContainer = activeInput === input
+      ? fieldContainer
+      : refreshedPartField?.fieldContainer || activeInput;
 
     if (!activeInput) {
       console.warn(`[SparxSolver] Answer part ${answerPartIndex + 1}, field ${fieldIndex + 1} is missing on attempt ${attempt}/${maxAttempts}.`);
     } else {
-      const bounds = activeInput.getBoundingClientRect();
+      const bounds = activeContainer.getBoundingClientRect();
       console.info(`[SparxSolver] Entering answer part ${answerPartIndex + 1}, field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}; original field: ${activeInput === input}; position: ${Math.round(bounds.x)},${Math.round(bounds.y)}; value: ${expectedValue}.`);
       try {
-        let actualValue = await typeIntoNumericInput(activeInput, expectedValue);
+        let actualValue = await typeIntoNumericInput(activeInput, expectedValue, activeContainer);
         if (actualValue !== expectedValue) {
           console.info(`[SparxSolver] Native input was rejected for field ${fieldIndex + 1}; trying the Sparx keypad.`);
-          actualValue = await enterAnswerWithKeypad(activeInput, expectedValue);
+          actualValue = await enterAnswerWithKeypad(activeInput, expectedValue, activeContainer);
         }
 
         if (normalizeAnswerKeyLabel(actualValue) === normalizeAnswerKeyLabel(expectedValue)) {
@@ -1243,6 +1258,20 @@ async function handleMultipleChoiceAnswer(item, dynamicAnswer) {
 async function typeAnswer(finalAnswer) {
   const answerItems = getOrderedAnswerItems();
   console.log(answerItems);
+  const numericTargets = answerItems
+    .filter((item) => item.type === "numeric")
+    .map((item, index) => {
+      const bounds = item.fieldContainer.getBoundingClientRect();
+      return {
+        field: index + 1,
+        answerPart: item.answerPartIndex + 1,
+        x: Math.round(bounds.x),
+        y: Math.round(bounds.y),
+        tag: item.input.tagName,
+        className: String(item.fieldContainer.className || "").slice(0, 100),
+      };
+    });
+  console.info("[SparxSolver] Numeric answer-slot map:", numericTargets);
 
   if (!answerItems.length) {
     console.error("[SparxSolver] No answer items found.");
@@ -1278,7 +1307,9 @@ async function typeAnswer(finalAnswer) {
           item.input,
           value,
           currentFieldIndex,
-          item.answerPartIndex
+          item.answerPartIndex,
+          item.answerPartFieldIndex,
+          item.fieldContainer
         );
         if (!enteredAndVerified) return false;
         dynamicAnswer = remaining;
