@@ -384,6 +384,59 @@ function cleanMathText(text) {
     .trim();
 }
 
+function normalizeAlgebraFactor(text) {
+  return String(text)
+    .replace(/\$/g, "")
+    .replace(/\\(?:left|right)\b/g, "")
+    .replace(/\\(?:cdot|times)\b/g, "*")
+    .replace(/[·×]/g, "*")
+    .replace(/²/g, "^2")
+    .replace(/³/g, "^3")
+    .replace(/\^\{([^}]+)\}/g, "^$1")
+    .replace(/[{}\s]/g, "")
+    .replace(/[−–]/g, "-")
+    .toLowerCase();
+}
+
+function getCommutativeProductFactors(expression) {
+  const normalized = normalizeAlgebraFactor(expression);
+  const factors = [];
+  let depth = 0;
+  let factorStart = -1;
+  let consumedThrough = 0;
+
+  for (let index = 0; index < normalized.length; index++) {
+    const character = normalized[index];
+    if (character === "(") {
+      if (depth === 0) {
+        const separator = normalized.slice(consumedThrough, index).replace(/[*)]/g, "");
+        if (separator) return null;
+        factorStart = index + 1;
+      }
+      depth++;
+    } else if (character === ")") {
+      depth--;
+      if (depth < 0) return null;
+      if (depth === 0) {
+        factors.push(normalized.slice(factorStart, index));
+        consumedThrough = index + 1;
+      }
+    }
+  }
+
+  if (depth !== 0 || factors.length < 2) return null;
+  if (normalized.slice(consumedThrough).replace(/[*)]/g, "")) return null;
+  return factors.sort();
+}
+
+function hasEquivalentFactorProduct(firstExpression, secondExpression) {
+  const firstFactors = getCommutativeProductFactors(firstExpression);
+  const secondFactors = getCommutativeProductFactors(secondExpression);
+  return !!firstFactors && !!secondFactors &&
+    firstFactors.length === secondFactors.length &&
+    firstFactors.every((factor, index) => factor === secondFactors[index]);
+}
+
 /**
  * Character crawler that advances through the stream and slices off the matched text,
  * dynamically skipping formatting symbols and whitespace noise.
@@ -675,12 +728,20 @@ async function handleInlineSlotAnswer(item, dynamicAnswer) {
   processedChoices.sort((a, b) => b.cleanText.length - a.cleanText.length);
 
   const normalizedAnswer = cleanMathText(dynamicAnswer);
-  let targetChoice = null;
+  let targetChoice = processedChoices.find((choice) =>
+    hasEquivalentFactorProduct(dynamicAnswer, choice.rawText)
+  ) || null;
 
-  for (const choice of processedChoices) {
-    if (choice.cleanText && normalizedAnswer.includes(choice.cleanText)) {
-      targetChoice = choice;
-      break;
+  if (targetChoice) {
+    console.info(`[SparxSolver] Matched equivalent factor product despite factor order: "${targetChoice.rawText}".`);
+  }
+
+  if (!targetChoice) {
+    for (const choice of processedChoices) {
+      if (choice.cleanText && normalizedAnswer.includes(choice.cleanText)) {
+        targetChoice = choice;
+        break;
+      }
     }
   }
 
