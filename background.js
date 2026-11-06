@@ -264,11 +264,13 @@ chrome.runtime.onConnect.addListener(function (port) {
   if (port.name === "solveMathStream") {
     port.onMessage.addListener(async function (msg) {
       if (msg.action === "solveMath") {
+        let requestTimeout = null;
+        let storedProvider = null;
         try {
           // Fetch API Key, provider, and model from storage
           const {
             apiKey: storedApiKey,
-            provider: storedProvider,
+            provider,
             model: storedModel,
           } = await new Promise((resolve) =>
             chrome.storage.local.get(
@@ -276,6 +278,7 @@ chrome.runtime.onConnect.addListener(function (port) {
               resolve
             )
           );
+          storedProvider = provider;
 
           if (!storedApiKey || !storedProvider || (!storedModel && !PROVIDERS[storedProvider]?.models)) {
             let missingFields = [];
@@ -340,6 +343,8 @@ chrome.runtime.onConnect.addListener(function (port) {
 
           let response = null;
           let fetchError = null;
+          const requestController = new AbortController();
+          requestTimeout = setTimeout(() => requestController.abort(), 60000);
 
           for (const modelToTry of modelsToTry) {
             const requestBody = {
@@ -359,7 +364,7 @@ chrome.runtime.onConnect.addListener(function (port) {
                 },
               ],
               stream: true,
-              max_tokens: 60000,
+              max_tokens: 4096,
               temperature: 0.3,
             };
 
@@ -373,6 +378,7 @@ chrome.runtime.onConnect.addListener(function (port) {
                     "Content-Type": "application/json",
                     Authorization: `Bearer ${storedApiKey}`,
                   },
+                  signal: requestController.signal,
                   body: JSON.stringify(requestBody),
                 }
               );
@@ -395,6 +401,8 @@ chrome.runtime.onConnect.addListener(function (port) {
           }
 
           if (!response || !response.ok || !response.body) {
+            clearTimeout(requestTimeout);
+            requestTimeout = null;
             let errorDetails = "";
             let status = response ? response.status : 0;
             let statusText = response ? response.statusText : "";
@@ -454,13 +462,19 @@ chrome.runtime.onConnect.addListener(function (port) {
             if (streamDone) break;
           }
           port.postMessage({ done: true });
+          clearTimeout(requestTimeout);
+          requestTimeout = null;
           port.disconnect();
         } catch (error) {
+          if (requestTimeout) {
+            clearTimeout(requestTimeout);
+          }
+
           let errorMessage = error.message || "Unknown error";
 
           if (error.message?.includes("Failed to fetch")) {
             errorMessage = `Network error: Unable to reach ${PROVIDERS[storedProvider]?.name}. Check your internet connection and firewall settings.`;
-          } else if (error.message?.includes("timeout")) {
+          } else if (error.name === "AbortError" || error.message?.includes("timeout")) {
             errorMessage = `Request timeout: ${PROVIDERS[storedProvider]?.name} took too long to respond. Please try again.`;
           } else if (error.message?.includes("JSON")) {
             errorMessage = `Invalid response from ${PROVIDERS[storedProvider]?.name}: Could not parse response format. The provider may have changed their API.`;
@@ -536,9 +550,12 @@ async function captureAndProcessScreenshot(sendResponse) {
         model: modelToTry,
         messages: [
           {
+            role: "system",
+            content: detailedPrompt,
+          },
+          {
             role: "user",
             content: [
-              { type: "text", text: detailedPrompt },
               {
                 type: "image_url",
                 image_url: {
@@ -548,7 +565,7 @@ async function captureAndProcessScreenshot(sendResponse) {
             ],
           },
         ],
-        max_tokens: 60000,
+        max_tokens: 4096,
         temperature: 0.3,
       };
 

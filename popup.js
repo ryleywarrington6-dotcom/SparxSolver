@@ -2,6 +2,16 @@
 document.addEventListener("DOMContentLoaded", function () {
   console.log("[SparxSolver] Popup script loaded.");
   const solveButton = document.getElementById("solveButton");
+  const prepareGeminiPromptButton = document.getElementById("prepareGeminiPromptButton");
+  const geminiHandoff = document.getElementById("geminiHandoff");
+  const geminiPrompt = document.getElementById("geminiPrompt");
+  const openGeminiButton = document.getElementById("openGeminiButton");
+  const geminiHandoffStatus = document.getElementById("geminiHandoffStatus");
+  const geminiWebsiteToggle = document.getElementById("geminiWebsiteToggle");
+  const geminiWebsitePanel = document.getElementById("geminiWebsitePanel");
+  const geminiResponse = document.getElementById("geminiResponse");
+  const showGeminiResponseButton = document.getElementById("showGeminiResponseButton");
+  const geminiResponseDisplay = document.getElementById("geminiResponseDisplay");
   const loadingIndicator = document.getElementById("loadingIndicator");
   const resultContainer = document.getElementById("resultContainer");
   const apiKeyScreen = document.getElementById("apiKeyScreen");
@@ -58,6 +68,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   let isAutoSolveRunning = false;
+  let autoSolveRunQueued = false;
 
   function getLocalStorage(keys) {
     return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -68,6 +79,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function disableAutoSolveSetting() {
+    autoSolveRunQueued = false;
     return setLocalStorage({ autoSolveEnabled: false }).then(() => {
       if (autoSolveToggle) autoSolveToggle.checked = false;
       setSolveButtonAutoState(false);
@@ -145,17 +157,17 @@ document.addEventListener("DOMContentLoaded", function () {
       throw new Error("No active tab found for auto solve handoff.");
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
         tab.id,
         { action: "autoSolveAnswerReady", finalAnswer },
         (response) => {
           if (chrome.runtime.lastError) {
-            console.warn(
-              "[SparxSolver] Auto solve handoff failed:",
-              chrome.runtime.lastError.message
-            );
-            resolve(null);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response || response.error) {
+            reject(new Error(response?.error || "Auto solve handoff returned no response."));
             return;
           }
           resolve(response);
@@ -183,6 +195,14 @@ document.addEventListener("DOMContentLoaded", function () {
       const port = chrome.runtime.connect({ name: "solveMathStream" });
       let solutionBuffer = "";
       let isDone = false;
+      const requestTimeout = setTimeout(() => {
+        if (isDone) return;
+        isDone = true;
+        loadingIndicator.style.display = "none";
+        resultContainer.textContent = "Error: The AI response timed out. Please try again.";
+        port.disconnect();
+        reject(new Error("AI response timed out."));
+      }, 75000);
 
       port.onMessage.addListener((msg) => {
         if (msg.chunk) {
@@ -191,19 +211,31 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         if (msg.error) {
+          isDone = true;
+          clearTimeout(requestTimeout);
           loadingIndicator.style.display = "none";
           resultContainer.textContent = "Error: " + msg.error;
           port.disconnect();
-          isDone = true;
           reject(new Error(msg.error));
         }
 
         if (msg.done && !isDone) {
           isDone = true;
+          clearTimeout(requestTimeout);
           const result = renderSolveResult(solutionBuffer);
           port.disconnect();
           resolve(result);
         }
+      });
+
+      port.onDisconnect.addListener(() => {
+        if (isDone) return;
+        isDone = true;
+        clearTimeout(requestTimeout);
+        loadingIndicator.style.display = "none";
+        const errorMessage = chrome.runtime.lastError?.message || "The AI connection closed before a response completed.";
+        resultContainer.textContent = `Error: ${errorMessage}`;
+        reject(new Error(errorMessage));
       });
 
       port.postMessage({ action: "solveMath" });
@@ -212,6 +244,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
   async function runAutoSolveOnce() {
     if (isAutoSolveRunning) {
+      autoSolveRunQueued = true;
       return;
     }
 
@@ -225,6 +258,14 @@ document.addEventListener("DOMContentLoaded", function () {
       await disableAutoSolveSetting();
     } finally {
       isAutoSolveRunning = false;
+      if (autoSolveRunQueued) {
+        autoSolveRunQueued = false;
+        chrome.storage.local.get("autoSolveEnabled", (data) => {
+          if (data.autoSolveEnabled) {
+            runAutoSolveOnce();
+          }
+        });
+      }
     }
   }
 
@@ -246,6 +287,7 @@ document.addEventListener("DOMContentLoaded", function () {
   if (autoSolveToggle) {
     autoSolveToggle.addEventListener("change", () => {
       const autoSolveEnabled = autoSolveToggle.checked;
+      if (!autoSolveEnabled) autoSolveRunQueued = false;
       chrome.storage.local.set({ autoSolveEnabled }, () => {
         setSolveButtonAutoState(autoSolveEnabled);
         if (autoSolveEnabled) {
@@ -651,5 +693,78 @@ document.addEventListener("DOMContentLoaded", function () {
     runSolveMath().catch((error) => {
       console.error("[SparxSolver] Solve failed:", error);
     });
+  });
+
+  prepareGeminiPromptButton.addEventListener("click", async () => {
+    prepareGeminiPromptButton.disabled = true;
+    geminiHandoffStatus.textContent = "Reading visible question text...";
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        throw new Error("No active Sparx tab was found.");
+      }
+
+      const response = await new Promise((resolve) => {
+        chrome.tabs.sendMessage(tab.id, { action: "getQuestionText" }, (result) => {
+          if (chrome.runtime.lastError) {
+            resolve({ error: "Could not read the page. Refresh Sparx and try again." });
+            return;
+          }
+          resolve(result || {});
+        });
+      });
+
+      if (response.error || !response.text) {
+        throw new Error(response.error || "No question text was found.");
+      }
+
+      geminiPrompt.value = `Solve this UK GCSE maths question step by step. Explain the method clearly and finish with the final answer.\n\nQuestion:\n${response.text}`;
+      geminiHandoff.hidden = false;
+      geminiPrompt.focus();
+      geminiPrompt.select();
+      geminiHandoffStatus.textContent = "Copy the selected prompt, then open Gemini and paste it. Attach a screenshot separately if the question contains a diagram.";
+      sendHeightToParent();
+    } catch (error) {
+      geminiHandoff.hidden = false;
+      geminiHandoffStatus.textContent = error.message;
+      sendHeightToParent();
+    } finally {
+      prepareGeminiPromptButton.disabled = false;
+    }
+  });
+
+  openGeminiButton.addEventListener("click", () => {
+    chrome.tabs.create({ url: "https://gemini.google.com/app" }, () => {
+      if (chrome.runtime.lastError) {
+        geminiHandoffStatus.textContent = "Could not open Gemini in a new tab.";
+      }
+    });
+  });
+
+  chrome.storage.local.get("geminiWebsiteEnabled", (data) => {
+    geminiWebsiteToggle.checked = Boolean(data.geminiWebsiteEnabled);
+    geminiWebsitePanel.hidden = !geminiWebsiteToggle.checked;
+    sendHeightToParent();
+  });
+
+  geminiWebsiteToggle.addEventListener("change", () => {
+    const enabled = geminiWebsiteToggle.checked;
+    geminiWebsitePanel.hidden = !enabled;
+    chrome.storage.local.set({ geminiWebsiteEnabled: enabled });
+    sendHeightToParent();
+  });
+
+  showGeminiResponseButton.addEventListener("click", () => {
+    const response = geminiResponse.value.trim();
+    if (!response) {
+      geminiHandoffStatus.textContent = "Paste a response before showing it.";
+      return;
+    }
+
+    geminiResponseDisplay.textContent = response;
+    geminiResponseDisplay.hidden = false;
+    geminiHandoffStatus.textContent = "Response shown. Review it and enter your answer on Sparx yourself.";
+    sendHeightToParent();
   });
 });
