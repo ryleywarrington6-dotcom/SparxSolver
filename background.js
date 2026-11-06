@@ -74,6 +74,7 @@ async function dispatchTrustedInput(tabId, events) {
           code: event.code,
           windowsVirtualKeyCode: event.windowsVirtualKeyCode,
           nativeVirtualKeyCode: event.windowsVirtualKeyCode,
+          modifiers: event.modifiers || 0,
         };
         await sendDebuggerCommand(debuggee, "Input.dispatchKeyEvent", { ...keyData, type: "keyDown" });
         if (event.text) {

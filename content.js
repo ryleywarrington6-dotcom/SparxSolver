@@ -1166,7 +1166,9 @@ async function activateAndVerifyAnswerChoice(choice, label) {
   return false;
 }
 
-function findAnswerKeyControl(token) {
+function findAnswerKeyControl(token, cache = null) {
+  if (cache?.has(token)) return cache.get(token);
+
   const aliases = {
     "π": ["π", "pi", "pi symbol"],
     "×": ["×", "multiply", "times"],
@@ -1207,28 +1209,33 @@ function findAnswerKeyControl(token) {
     return labels.some((label) => expectedLabels.has(normalizeAnswerKeyLabel(label)));
   });
 
+  const questionElement = findQuestionContentElement();
   matchingControls.sort((first, second) => {
     const keypadSelector = "[class*='Keypad'], [class*='keypad'], [class*='Keyboard'], [class*='keyboard'], [data-testid*='keypad' i]";
     const firstInKeypad = first.closest(keypadSelector) ? 1 : 0;
     const secondInKeypad = second.closest(keypadSelector) ? 1 : 0;
-    const firstInQuestion = findQuestionContentElement()?.contains(first) ? 1 : 0;
-    const secondInQuestion = findQuestionContentElement()?.contains(second) ? 1 : 0;
+    const firstInQuestion = questionElement?.contains(first) ? 1 : 0;
+    const secondInQuestion = questionElement?.contains(second) ? 1 : 0;
     return secondInKeypad - firstInKeypad || secondInQuestion - firstInQuestion;
   });
 
-  return matchingControls[0] || null;
+  const result = matchingControls[0] || null;
+  cache?.set(token, result);
+  return result;
 }
 
-async function activateAnswerKeyControl(control) {
-  control.scrollIntoView({ block: "center", inline: "center" });
+function createTrustedClickEvent(control, scrollIntoView = true) {
+  if (scrollIntoView) control.scrollIntoView({ block: "center", inline: "center" });
   const bounds = control.getBoundingClientRect();
-  const trustedClick = await dispatchTrustedInputSequence([{
+  return {
     type: "click",
     x: bounds.left + bounds.width / 2,
     y: bounds.top + bounds.height / 2,
-  }]);
-  if (trustedClick) return true;
+  };
+}
 
+function dispatchSyntheticClick(control) {
+  const bounds = control.getBoundingClientRect();
   const eventOptions = {
     bubbles: true,
     cancelable: true,
@@ -1236,12 +1243,18 @@ async function activateAnswerKeyControl(control) {
     clientX: bounds.left + bounds.width / 2,
     clientY: bounds.top + bounds.height / 2,
   };
-
   control.dispatchEvent(new PointerEvent("pointerdown", eventOptions));
   control.dispatchEvent(new MouseEvent("mousedown", eventOptions));
   control.dispatchEvent(new PointerEvent("pointerup", eventOptions));
   control.dispatchEvent(new MouseEvent("mouseup", eventOptions));
   control.dispatchEvent(new MouseEvent("click", eventOptions));
+}
+
+async function activateAnswerKeyControl(control) {
+  const trustedClick = await dispatchTrustedInputSequence([createTrustedClickEvent(control)]);
+  if (trustedClick) return true;
+
+  dispatchSyntheticClick(control);
   return false;
 }
 
@@ -1258,42 +1271,81 @@ function getAnswerKeyTokens(value) {
 }
 
 async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
+  const tokens = getAnswerKeyTokens(value);
+  const keyControlCache = new Map();
   await clickIntoInput(input, fieldContainer);
 
-  const clearControl = findAnswerKeyControl("clear");
-  const backspaceControl = findAnswerKeyControl("backspace");
+  const clearControl = findAnswerKeyControl("clear", keyControlCache);
+  const backspaceControl = findAnswerKeyControl("backspace", keyControlCache);
+  const tokenControls = [];
+  for (const [index, token] of tokens.entries()) {
+    const keyControl = findAnswerKeyControl(token, keyControlCache);
+    if (!keyControl && !trustedKeyEventForToken(token)) {
+      console.warn(`[SparxSolver] No keypad key or trusted keyboard input available for token "${token}" at position ${index + 1}.`);
+      return "";
+    }
+    tokenControls.push({ token, control: keyControl });
+  }
+
+  const keypadControls = [clearControl, backspaceControl, ...tokenControls.map(({ control }) => control)]
+    .filter(Boolean);
+  const keypadContainerSelector = "[class*='Keypad'], [class*='keypad'], [class*='Keyboard'], [class*='keyboard'], [data-testid*='keypad' i]";
+  const keypadContainer = keypadControls
+    .map((control) => control.closest(keypadContainerSelector))
+    .find(Boolean) || keypadControls[0];
+  if (keypadContainer) {
+    keypadContainer.scrollIntoView({ block: "center", inline: "center" });
+  }
+
+  const events = [];
   if (clearControl) {
-    await activateAnswerKeyControl(clearControl);
+    events.push(createTrustedClickEvent(clearControl, false));
   } else if (backspaceControl) {
     for (let count = 0; count < 20; count++) {
-      await activateAnswerKeyControl(backspaceControl);
+      events.push(createTrustedClickEvent(backspaceControl, false));
     }
   } else {
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+    events.push(
+      { type: "key", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
+      { type: "key", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+    );
   }
-  await sleep(80);
 
-  const tokens = getAnswerKeyTokens(value);
-  for (const [index, token] of tokens.entries()) {
-    const keyControl = findAnswerKeyControl(token);
-    if (!keyControl) {
+  for (const { token, control } of tokenControls) {
+    if (!control) {
       const keyEvent = trustedKeyEventForToken(token);
-      if (!keyEvent || !await dispatchTrustedInputSequence([keyEvent])) {
-        console.warn(`[SparxSolver] No keypad key or trusted keyboard input available for token "${token}" at position ${index + 1}.`);
-        return "";
-      }
-      console.info(`[SparxSolver] Sent trusted keyboard key "${token}" to the focused answer field.`);
+      events.push(keyEvent);
     } else {
-      await activateAnswerKeyControl(keyControl);
+      events.push(createTrustedClickEvent(control, false));
     }
-    await sleep(100);
+  }
+
+  const trustedInputWorked = await dispatchTrustedInputSequence(events);
+  if (trustedInputWorked) {
+    await sleep(120);
     const enteredValue = "value" in input
       ? String(input.value)
       : String(input.textContent || "").trim();
-    console.info(`[SparxSolver] Keypad token ${index + 1}/${tokens.length} "${token}" entered; field now reads "${enteredValue}".`, keyControl);
+    console.info(`[SparxSolver] Batched ${events.length} trusted keypad events for one answer field; expected "${value}", observed "${enteredValue}".`, tokenControls);
+    return enteredValue;
   }
 
+  console.warn("[SparxSolver] Trusted input unavailable; falling back to individual DOM keypad events.");
+  await clickIntoInput(input, fieldContainer);
+  if (clearControl) {
+    dispatchSyntheticClick(clearControl);
+  } else if (backspaceControl) {
+    for (let count = 0; count < 20; count++) dispatchSyntheticClick(backspaceControl);
+  }
+  for (const { token, control } of tokenControls) {
+    if (control) {
+      dispatchSyntheticClick(control);
+    } else {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: token, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keypress", { key: token, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keyup", { key: token, bubbles: true }));
+    }
+  }
   await sleep(120);
   return "value" in input
     ? String(input.value)
@@ -2028,10 +2080,17 @@ async function runAutoSolvePageFlow(finalAnswer) {
   function applyIframeInteractionStyles(iframeElement) {
     if (!iframeElement) return;
 
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const compactViewport = viewportWidth < 520;
+    const horizontalInset = compactViewport ? 8 : 20;
+
     iframeElement.style.position = "fixed";
-    iframeElement.style.top = "20px";
-    iframeElement.style.right = "20px";
-    iframeElement.style.width = "475px";
+    iframeElement.style.top = `${horizontalInset}px`;
+    iframeElement.style.right = `${horizontalInset}px`;
+    iframeElement.style.width = `${Math.max(0, Math.min(475, viewportWidth - horizontalInset * 2))}px`;
+    iframeElement.style.maxHeight = `${Math.max(240, Math.min(MAX_IFRAME_HEIGHT, viewportHeight - horizontalInset * 2))}px`;
+    iframeElement.style.boxSizing = "border-box";
     iframeElement.style.zIndex = IFRAME_Z_INDEX;
     iframeElement.style.pointerEvents = "auto";
     iframeElement.style.border = "1px solid #dbdbdb";
@@ -2040,6 +2099,10 @@ async function runAutoSolvePageFlow(finalAnswer) {
     iframeElement.style.backgroundColor = "white";
     iframeElement.style.transition = "height 0.2s ease-in-out";
   }
+
+  window.addEventListener("resize", () => {
+    if (isIframeVisible) applyIframeInteractionStyles(getSolverIframe());
+  });
 
   function enablePageAndIframePointerEvents() {
     if (
@@ -2283,9 +2346,8 @@ async function runAutoSolvePageFlow(finalAnswer) {
           if (iframe && event.data.height) {
             // Add a small buffer to prevent scrollbars
             let newHeight = event.data.height + 20;
-            if (newHeight > MAX_IFRAME_HEIGHT) {
-              newHeight = MAX_IFRAME_HEIGHT;
-            }
+            const viewportLimit = Math.max(240, Math.min(MAX_IFRAME_HEIGHT, window.innerHeight - 16));
+            newHeight = Math.min(newHeight, viewportLimit);
             iframe.style.height = `${newHeight}px`;
             applyIframeInteractionStyles(iframe);
           }

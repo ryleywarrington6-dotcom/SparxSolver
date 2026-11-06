@@ -487,3 +487,42 @@ pre.code-block code {
   display: none; /* Hidden by default */
   margin-right: -175px;
 }
+
+@media (max-width: 480px) {
+  body {
+    padding: 8px;
+    font-size: 14px;
+  }
+
+  #header {
+    margin: -8px -8px 8px;
+    padding: 6px 8px;
+  }
+
+  #heading {
+    font-size: 1em;
+  }
+
+  #autoSettingsPanel {
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .toggle-row {
+    gap: 4px;
+    font-size: 0.78em;
+  }
+
+  #solveButton,
+  #providerSelect,
+  #saveApiKeyButton,
+  #clearBookworksBtn {
+    min-height: 40px;
+  }
+
+  button,
+  [role="button"],
+  .tab-btn {
+    touch-action: manipulation;
+  }
+}
