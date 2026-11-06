@@ -970,18 +970,25 @@ async function clickIntoInput(input, fieldContainer = input) {
   const target = fieldContainer?.isConnected ? fieldContainer : input;
   target.scrollIntoView({ block: "center", inline: "center" });
   const bounds = target.getBoundingClientRect();
-  const eventPosition = {
-    bubbles: true,
-    cancelable: true,
-    view: window,
-    clientX: bounds.left + bounds.width / 2,
-    clientY: bounds.top + bounds.height / 2,
-  };
+  const trustedClick = await dispatchTrustedInputSequence([{
+    type: "click",
+    x: bounds.left + bounds.width / 2,
+    y: bounds.top + bounds.height / 2,
+  }]);
 
-  target.dispatchEvent(new PointerEvent("pointerdown", eventPosition));
-  target.dispatchEvent(new MouseEvent("mousedown", eventPosition));
-  target.dispatchEvent(new MouseEvent("mouseup", eventPosition));
-  target.dispatchEvent(new MouseEvent("click", eventPosition));
+  if (!trustedClick) {
+    const eventPosition = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
+    };
+    target.dispatchEvent(new PointerEvent("pointerdown", eventPosition));
+    target.dispatchEvent(new MouseEvent("mousedown", eventPosition));
+    target.dispatchEvent(new MouseEvent("mouseup", eventPosition));
+    target.dispatchEvent(new MouseEvent("click", eventPosition));
+  }
   input.focus({ preventScroll: true });
 
   const focused = document.activeElement === input;
@@ -1024,6 +1031,38 @@ function normalizeAnswerKeyLabel(value) {
     .toLowerCase()
     .replace(/^(key|digit)\s+/, "")
     .replace(/\s+(key|button)$/, "");
+}
+
+function dispatchTrustedInputSequence(events) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action: "trustedInputSequence", events }, (response) => {
+      if (chrome.runtime.lastError || !response?.ok) {
+        if (response?.error) console.warn("[SparxSolver] Trusted input unavailable:", response.error);
+        resolve(false);
+        return;
+      }
+      resolve(true);
+    });
+  });
+}
+
+function trustedKeyEventForToken(token) {
+  if (/^\d$/.test(token)) {
+    return {
+      type: "key",
+      key: token,
+      code: `Digit${token}`,
+      windowsVirtualKeyCode: 48 + Number(token),
+      text: token,
+    };
+  }
+
+  const keyDefinitions = {
+    "-": { key: "-", code: "Minus", windowsVirtualKeyCode: 189, text: "-" },
+    ".": { key: ".", code: "Period", windowsVirtualKeyCode: 190, text: "." },
+    "/": { key: "/", code: "Slash", windowsVirtualKeyCode: 191, text: "/" },
+  };
+  return keyDefinitions[token] ? { type: "key", ...keyDefinitions[token] } : null;
 }
 
 function findAnswerKeyControl(token) {
@@ -1079,9 +1118,16 @@ function findAnswerKeyControl(token) {
   return matchingControls[0] || null;
 }
 
-function activateAnswerKeyControl(control) {
+async function activateAnswerKeyControl(control) {
   control.scrollIntoView({ block: "center", inline: "center" });
   const bounds = control.getBoundingClientRect();
+  const trustedClick = await dispatchTrustedInputSequence([{
+    type: "click",
+    x: bounds.left + bounds.width / 2,
+    y: bounds.top + bounds.height / 2,
+  }]);
+  if (trustedClick) return true;
+
   const eventOptions = {
     bubbles: true,
     cancelable: true,
@@ -1095,6 +1141,7 @@ function activateAnswerKeyControl(control) {
   control.dispatchEvent(new PointerEvent("pointerup", eventOptions));
   control.dispatchEvent(new MouseEvent("mouseup", eventOptions));
   control.dispatchEvent(new MouseEvent("click", eventOptions));
+  return false;
 }
 
 function getAnswerKeyTokens(value) {
@@ -1115,10 +1162,10 @@ async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
   const clearControl = findAnswerKeyControl("clear");
   const backspaceControl = findAnswerKeyControl("backspace");
   if (clearControl) {
-    activateAnswerKeyControl(clearControl);
+    await activateAnswerKeyControl(clearControl);
   } else if (backspaceControl) {
     for (let count = 0; count < 20; count++) {
-      activateAnswerKeyControl(backspaceControl);
+      await activateAnswerKeyControl(backspaceControl);
     }
   } else {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
@@ -1130,10 +1177,15 @@ async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
   for (const [index, token] of tokens.entries()) {
     const keyControl = findAnswerKeyControl(token);
     if (!keyControl) {
-      console.warn(`[SparxSolver] No on-screen keypad key found for token "${token}" at position ${index + 1}.`);
-      return "";
+      const keyEvent = trustedKeyEventForToken(token);
+      if (!keyEvent || !await dispatchTrustedInputSequence([keyEvent])) {
+        console.warn(`[SparxSolver] No keypad key or trusted keyboard input available for token "${token}" at position ${index + 1}.`);
+        return "";
+      }
+      console.info(`[SparxSolver] Sent trusted keyboard key "${token}" to the focused answer field.`);
+    } else {
+      await activateAnswerKeyControl(keyControl);
     }
-    activateAnswerKeyControl(keyControl);
     await sleep(100);
     const enteredValue = "value" in input
       ? String(input.value)
