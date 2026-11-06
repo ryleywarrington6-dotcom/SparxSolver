@@ -484,16 +484,27 @@ function isLikelyBookworkOptionSelected(optionElement) {
     return false;
   }
 
-  const ariaSelected = optionElement.getAttribute("aria-selected");
-  const ariaPressed = optionElement.getAttribute("aria-pressed");
-  const dataSelected = optionElement.getAttribute("data-selected");
-  const className = optionElement.className || "";
+  let candidate = optionElement;
+  for (let depth = 0; candidate && depth < 3; depth++, candidate = candidate.parentElement) {
+    const ariaSelected = candidate.getAttribute("aria-selected");
+    const ariaPressed = candidate.getAttribute("aria-pressed");
+    const ariaChecked = candidate.getAttribute("aria-checked");
+    const dataSelected = candidate.getAttribute("data-selected");
+    const dataState = candidate.getAttribute("data-state");
+    const className = candidate.className || "";
+    const checkedInput = candidate.matches("input:checked") || !!candidate.querySelector("input:checked");
 
-  if (ariaSelected === "true" || ariaPressed === "true" || dataSelected === "true") {
-    return true;
+    if (ariaSelected === "true" || ariaPressed === "true" || ariaChecked === "true" ||
+        dataSelected === "true" || /^(checked|selected|active)$/i.test(dataState || "") || checkedInput) {
+      return true;
+    }
+
+    if (/selected|active|checked|is-selected|is-active|highlighted|chosen/i.test(String(className))) {
+      return true;
+    }
   }
 
-  return /selected|active|checked|is-selected|is-active|highlighted|chosen/i.test(String(className));
+  return false;
 }
 
 async function clickBookworkOption(optionElement) {
@@ -632,7 +643,7 @@ async function captureInlineSlotArea(container, choices) {
 async function handleInlineSlotAnswer(item, dynamicAnswer) {
   console.log("[SparxSolver] Opening inline slot...");
   
-  clickIntoInput(item.slot);
+  await clickIntoInput(item.slot);
   await sleep(300); // Wait for the dropdown container to generate
 
   const optionsContainer = document.querySelector("[class*='_InlineSlotOptions_']");
@@ -675,8 +686,9 @@ async function handleInlineSlotAnswer(item, dynamicAnswer) {
 
   if (targetChoice) {
     console.log(`[SparxSolver] Selecting inline math option: "${targetChoice.rawText}"`);
-    targetChoice.element.click();
-    await sleep(200);
+    if (!await activateAndVerifyAnswerChoice(targetChoice.element, "inline math option")) {
+      return null;
+    }
     return targetChoice.cleanText; // Return clean representation to guide cutting engine
   }
 
@@ -697,9 +709,9 @@ async function handleInlineSlotAnswer(item, dynamicAnswer) {
     if (choiceIndex && choiceIndex > 0 && choiceIndex <= choices.length) {
       const selectedChoice = choices[choiceIndex - 1];
       console.log(`[SparxSolver] LLM Vision selected inline slot option index: ${choiceIndex}`);
-      
-      selectedChoice.click();
-      await sleep(200);
+      if (!await activateAndVerifyAnswerChoice(selectedChoice, `visual inline option ${choiceIndex}`)) {
+        return null;
+      }
       
       // Return the cleanText from the selected element to properly chop the dynamicAnswer window
       return cleanMathText(extractChoiceText(selectedChoice));
@@ -929,7 +941,7 @@ function selectImageAnswerChoiceMock(index) {
   return false;
 }
 
-function selectImageAnswerChoice(answerPart, index) {
+async function selectImageAnswerChoice(answerPart, index) {
   const choices = getImageAnswerChoices(answerPart);
 
   const target = choices[index - 1];
@@ -939,7 +951,8 @@ function selectImageAnswerChoice(answerPart, index) {
     return false;
   }
 
-  target.click();
+  const selected = await activateAndVerifyAnswerChoice(target, `image option ${index}`);
+  if (!selected) return false;
 
   console.log(
     `[SparxSolver] Clicked image choice ${index}.`
@@ -962,7 +975,10 @@ async function recognizeImageChoiceAnswer(answerPart, finalAnswer) {
   });
 
   console.log(`[SparxSolver] Recommended image answer choice: ${choiceIndex}`);
-  selectImageAnswerChoice(answerPart, choiceIndex);
+  const selected = await selectImageAnswerChoice(answerPart, choiceIndex);
+  if (!selected) {
+    throw new Error(`Image option ${choiceIndex} could not be selected.`);
+  }
   return { recognizedOnly: false, choiceIndex };
 }
 
@@ -1063,6 +1079,30 @@ function trustedKeyEventForToken(token) {
     "/": { key: "/", code: "Slash", windowsVirtualKeyCode: 191, text: "/" },
   };
   return keyDefinitions[token] ? { type: "key", ...keyDefinitions[token] } : null;
+}
+
+async function activateAndVerifyAnswerChoice(choice, label) {
+  if (!choice?.isConnected) return false;
+  if (isLikelyBookworkOptionSelected(choice)) {
+    console.info(`[SparxSolver] ${label} is already selected.`);
+    return true;
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await activateAnswerKeyControl(choice);
+    await sleep(180);
+    if (!choice.isConnected) {
+      console.info(`[SparxSolver] ${label} was removed or replaced after activation.`);
+      return true;
+    }
+    if (isLikelyBookworkOptionSelected(choice)) {
+      console.info(`[SparxSolver] Verified ${label} selected on attempt ${attempt}.`);
+      return true;
+    }
+    console.warn(`[SparxSolver] ${label} selection not reflected in the page state after attempt ${attempt}/3.`);
+  }
+
+  return false;
 }
 
 function findAnswerKeyControl(token) {
@@ -1318,8 +1358,9 @@ async function handleMultipleChoiceAnswer(item, dynamicAnswer) {
 
   if (targetChoice) {
     console.log(`[SparxSolver] Selecting matching text option: "${targetChoice.rawText}"`);
-    targetChoice.element.click();
-    await sleep(200);
+    if (!await activateAndVerifyAnswerChoice(targetChoice.element, "text answer option")) {
+      return null;
+    }
     return targetChoice.cleanText; // Return clean representation to guide cutting engine
   }
 
@@ -1341,9 +1382,9 @@ async function handleMultipleChoiceAnswer(item, dynamicAnswer) {
     if (choiceIndex && choiceIndex > 0 && choiceIndex <= choices.length) {
       const selectedChoice = choices[choiceIndex - 1];
       console.log(`[SparxSolver] LLM Vision selected option index: ${choiceIndex}`);
-      
-      selectedChoice.click();
-      await sleep(200);
+      if (!await activateAndVerifyAnswerChoice(selectedChoice, `visual answer option ${choiceIndex}`)) {
+        return null;
+      }
       
       // Return cleanText from the selected element to properly slice the remaining stream
       return cleanMathText(extractChoiceText(selectedChoice));

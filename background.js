@@ -552,7 +552,30 @@ chrome.runtime.onConnect.addListener(function (port) {
                 }
               }
             }
-            if (streamDone) break;
+              if (streamDone) {
+                buffer += decoder.decode();
+                for (const trailingLine of buffer.split(/\r?\n/)) {
+                  const line = trailingLine.trim();
+                  if (!line.startsWith("data: ")) continue;
+
+                  const data = line.slice(6).trim();
+                  if (data === "[DONE]") {
+                    done = true;
+                    continue;
+                  }
+                  if (!data) continue;
+
+                  try {
+                    const parsed = JSON.parse(data);
+                    const chunk = parsed.choices?.[0]?.delta?.content;
+                    if (chunk) port.postMessage({ chunk });
+                  } catch (error) {
+                    console.warn("[SparxSolver] Ignoring malformed final stream record.", error);
+                  }
+                }
+                buffer = "";
+                break;
+              }
           }
           port.postMessage({ done: true });
           clearTimeout(requestTimeout);
