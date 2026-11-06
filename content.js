@@ -222,7 +222,7 @@ function getOrderedAnswerItems(log = true) {
     "input[placeholder*='number' i]",
   ].join(", ");
 
-  for (const part of answerParts) {
+  for (const [partIndex, part] of answerParts.entries()) {
     const numericInputs = [...part.querySelectorAll(numericFieldSelector)]
       .map((field) => field.matches("input, textarea")
         ? field
@@ -239,7 +239,8 @@ function getOrderedAnswerItems(log = true) {
       for (const input of numericInputs) {
         items.push({
           type: "numeric",
-          input
+          input,
+          answerPartIndex: partIndex,
         });
       }
     }
@@ -949,16 +950,17 @@ async function recognizeImageChoiceAnswer(answerPart, finalAnswer) {
 }
 
 async function clickIntoInput(input) {
-  input.click();
-  input.focus();
-  
-  // Simulate the full lifecycle of a mouse click
+  input.scrollIntoView({ block: "center", inline: "center" });
+  input.focus({ preventScroll: true });
+
   input.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
   input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
-  console.log("click into input");
+  const focused = document.activeElement === input;
+  console.info(`[SparxSolver] Focus requested for answer field; active element matches: ${focused}.`, input);
+  return focused;
 }
 
 async function typeIntoNumericInput(input, value) {
@@ -1086,7 +1088,7 @@ async function enterAnswerWithKeypad(input, value) {
     : String(input.textContent || "").trim();
 }
 
-async function typeNumericInput(input, value, fieldIndex = 0) {
+async function typeNumericInput(input, value, fieldIndex = 0, answerPartIndex = fieldIndex) {
   if (value == null) return false;
 
   const expectedValue = String(value);
@@ -1095,13 +1097,18 @@ async function typeNumericInput(input, value, fieldIndex = 0) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const refreshedFields = getOrderedAnswerItems(false)
       .filter((item) => item.type === "numeric");
-    const activeInput = refreshedFields[fieldIndex]?.input ||
-      (input.isConnected ? input : null);
+    const refreshedPartField = refreshedFields.find((item) =>
+      item.answerPartIndex === answerPartIndex
+    );
+    const activeInput = input.isConnected
+      ? input
+      : refreshedPartField?.input || null;
 
     if (!activeInput) {
-      console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} is missing on attempt ${attempt}/${maxAttempts}.`);
+      console.warn(`[SparxSolver] Answer part ${answerPartIndex + 1}, field ${fieldIndex + 1} is missing on attempt ${attempt}/${maxAttempts}.`);
     } else {
-      console.info(`[SparxSolver] Entering numeric field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}: ${expectedValue}`);
+      const bounds = activeInput.getBoundingClientRect();
+      console.info(`[SparxSolver] Entering answer part ${answerPartIndex + 1}, field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}; original field: ${activeInput === input}; position: ${Math.round(bounds.x)},${Math.round(bounds.y)}; value: ${expectedValue}.`);
       try {
         let actualValue = await typeIntoNumericInput(activeInput, expectedValue);
         if (actualValue !== expectedValue) {
@@ -1110,12 +1117,12 @@ async function typeNumericInput(input, value, fieldIndex = 0) {
         }
 
         if (normalizeAnswerKeyLabel(actualValue) === normalizeAnswerKeyLabel(expectedValue)) {
-          console.info(`[SparxSolver] Verified numeric field ${fieldIndex + 1}: ${actualValue}`);
+          console.info(`[SparxSolver] Verified answer part ${answerPartIndex + 1}, field ${fieldIndex + 1}: ${actualValue}`);
           return true;
         }
-        console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} verification mismatch: expected "${expectedValue}", got "${actualValue}".`);
+        console.warn(`[SparxSolver] Answer part ${answerPartIndex + 1}, field ${fieldIndex + 1} verification mismatch: expected "${expectedValue}", got "${actualValue}".`);
       } catch (error) {
-        console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} attempt ${attempt} failed:`, error);
+        console.warn(`[SparxSolver] Answer part ${answerPartIndex + 1}, field ${fieldIndex + 1} attempt ${attempt} failed:`, error);
       }
     }
 
@@ -1124,7 +1131,7 @@ async function typeNumericInput(input, value, fieldIndex = 0) {
     }
   }
 
-  console.error(`[SparxSolver] Could not verify numeric field ${fieldIndex + 1} after ${maxAttempts} attempts.`);
+  console.error(`[SparxSolver] Could not verify answer part ${answerPartIndex + 1}, field ${fieldIndex + 1} after ${maxAttempts} attempts.`);
   return false;
 }
 
@@ -1267,7 +1274,12 @@ async function typeAnswer(finalAnswer) {
           return false;
         }
 
-        const enteredAndVerified = await typeNumericInput(item.input, value, currentFieldIndex);
+        const enteredAndVerified = await typeNumericInput(
+          item.input,
+          value,
+          currentFieldIndex,
+          item.answerPartIndex
+        );
         if (!enteredAndVerified) return false;
         dynamicAnswer = remaining;
         console.info(`[SparxSolver] Field ${currentFieldIndex + 1} verified; remaining answer text:`, dynamicAnswer);
