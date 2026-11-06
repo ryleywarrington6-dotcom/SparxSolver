@@ -392,10 +392,9 @@ chrome.runtime.onConnect.addListener(function (port) {
           }
 
           // 1. Request screenshot of the question element from content script
-          const [tab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
+          const tab = msg.tabId
+            ? await chrome.tabs.get(msg.tabId).catch(() => null)
+            : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
           if (!tab || !tab.id) {
             port.postMessage({
               error: "No active tab found. Please open a Sparx Learning page and make sure the extension has access to it.",

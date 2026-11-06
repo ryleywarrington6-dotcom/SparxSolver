@@ -147,19 +147,14 @@ document.addEventListener("DOMContentLoaded", function () {
     return { solution, finalAnswer: finalAnswerText };
   }
 
-  async function sendAutoSolveAnswerToContent(finalAnswer) {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-
-    if (!tab || !tab.id) {
+  async function sendAutoSolveAnswerToContent(finalAnswer, tabId) {
+    if (!tabId) {
       throw new Error("No active tab found for auto solve handoff.");
     }
 
     return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
-        tab.id,
+        tabId,
         { action: "autoSolveAnswerReady", finalAnswer },
         (response) => {
           if (chrome.runtime.lastError) {
@@ -181,6 +176,14 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!data.apiKey || !data.provider || !data.model) {
       showApiKeyScreen();
       throw new Error("Missing API key, provider, or model.");
+    }
+
+    const [targetTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (!targetTab?.id) {
+      throw new Error("No active tab found for auto solve.");
     }
 
     if (finalAnswerScreen) {
@@ -224,7 +227,7 @@ document.addEventListener("DOMContentLoaded", function () {
           clearTimeout(requestTimeout);
           const result = renderSolveResult(solutionBuffer);
           port.disconnect();
-          resolve(result);
+          resolve({ ...result, tabId: targetTab.id });
         }
       });
 
@@ -238,7 +241,7 @@ document.addEventListener("DOMContentLoaded", function () {
         reject(new Error(errorMessage));
       });
 
-      port.postMessage({ action: "solveMath" });
+      port.postMessage({ action: "solveMath", tabId: targetTab.id });
     });
   }
 
@@ -250,9 +253,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
     isAutoSolveRunning = true;
     try {
-      const { finalAnswer } = await runSolveMath();
+      const { finalAnswer, tabId } = await runSolveMath();
       await setLocalStorage({ lastAutoSolveAnswer: finalAnswer });
-      await sendAutoSolveAnswerToContent(finalAnswer);
+      await sendAutoSolveAnswerToContent(finalAnswer, tabId);
     } catch (error) {
       console.error("[SparxSolver] Auto solve failed:", error);
       await disableAutoSolveSetting();
@@ -307,7 +310,7 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  chrome.runtime.onMessage.addListener((request) => {
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "autoSolveDisabled") {
       if (autoSolveToggle) autoSolveToggle.checked = false;
       setSolveButtonAutoState(false);
