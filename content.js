@@ -1040,7 +1040,6 @@ function findAnswerKeyControl(token) {
     clear: ["clear", "clear all", "clear entry"],
   };
   const expectedLabels = new Set((aliases[token] || [token]).map(normalizeAnswerKeyLabel));
-  const question = findQuestionContentElement() || document;
   const selector = [
     "button",
     "[role='button']",
@@ -1051,7 +1050,8 @@ function findAnswerKeyControl(token) {
     "[class*='button']",
   ].join(", ");
 
-  return [...question.querySelectorAll(selector)].find((control) => {
+  const controls = [...document.querySelectorAll(selector)];
+  const matchingControls = controls.filter((control) => {
     const style = window.getComputedStyle(control);
     if (style.display === "none" || style.visibility === "hidden" || !control.getClientRects().length) {
       return false;
@@ -1065,7 +1065,36 @@ function findAnswerKeyControl(token) {
       control.getAttribute("data-value"),
     ];
     return labels.some((label) => expectedLabels.has(normalizeAnswerKeyLabel(label)));
-  }) || null;
+  });
+
+  matchingControls.sort((first, second) => {
+    const keypadSelector = "[class*='Keypad'], [class*='keypad'], [class*='Keyboard'], [class*='keyboard'], [data-testid*='keypad' i]";
+    const firstInKeypad = first.closest(keypadSelector) ? 1 : 0;
+    const secondInKeypad = second.closest(keypadSelector) ? 1 : 0;
+    const firstInQuestion = findQuestionContentElement()?.contains(first) ? 1 : 0;
+    const secondInQuestion = findQuestionContentElement()?.contains(second) ? 1 : 0;
+    return secondInKeypad - firstInKeypad || secondInQuestion - firstInQuestion;
+  });
+
+  return matchingControls[0] || null;
+}
+
+function activateAnswerKeyControl(control) {
+  control.scrollIntoView({ block: "center", inline: "center" });
+  const bounds = control.getBoundingClientRect();
+  const eventOptions = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    clientX: bounds.left + bounds.width / 2,
+    clientY: bounds.top + bounds.height / 2,
+  };
+
+  control.dispatchEvent(new PointerEvent("pointerdown", eventOptions));
+  control.dispatchEvent(new MouseEvent("mousedown", eventOptions));
+  control.dispatchEvent(new PointerEvent("pointerup", eventOptions));
+  control.dispatchEvent(new MouseEvent("mouseup", eventOptions));
+  control.dispatchEvent(new MouseEvent("click", eventOptions));
 }
 
 function getAnswerKeyTokens(value) {
@@ -1086,10 +1115,10 @@ async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
   const clearControl = findAnswerKeyControl("clear");
   const backspaceControl = findAnswerKeyControl("backspace");
   if (clearControl) {
-    clearControl.click();
+    activateAnswerKeyControl(clearControl);
   } else if (backspaceControl) {
     for (let count = 0; count < 20; count++) {
-      backspaceControl.click();
+      activateAnswerKeyControl(backspaceControl);
     }
   } else {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
@@ -1104,8 +1133,12 @@ async function enterAnswerWithKeypad(input, value, fieldContainer = input) {
       console.warn(`[SparxSolver] No on-screen keypad key found for token "${token}" at position ${index + 1}.`);
       return "";
     }
-    keyControl.click();
-    await sleep(60);
+    activateAnswerKeyControl(keyControl);
+    await sleep(100);
+    const enteredValue = "value" in input
+      ? String(input.value)
+      : String(input.textContent || "").trim();
+    console.info(`[SparxSolver] Keypad token ${index + 1}/${tokens.length} "${token}" entered; field now reads "${enteredValue}".`, keyControl);
   }
 
   await sleep(120);
@@ -1140,9 +1173,11 @@ async function typeNumericInput(input, value, fieldIndex = 0, answerPartIndex = 
       const bounds = activeContainer.getBoundingClientRect();
       console.info(`[SparxSolver] Entering answer part ${answerPartIndex + 1}, field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}; original field: ${activeInput === input}; position: ${Math.round(bounds.x)},${Math.round(bounds.y)}; value: ${expectedValue}.`);
       try {
-        let actualValue = await typeIntoNumericInput(activeInput, expectedValue, activeContainer);
+        let actualValue = activeInput.readOnly
+          ? ""
+          : await typeIntoNumericInput(activeInput, expectedValue, activeContainer);
         if (actualValue !== expectedValue) {
-          console.info(`[SparxSolver] Native input was rejected for field ${fieldIndex + 1}; trying the Sparx keypad.`);
+          console.info(`[SparxSolver] ${activeInput.readOnly ? "Field is read-only" : "Native input was rejected"} for field ${fieldIndex + 1}; using the visible Sparx keypad.`);
           actualValue = await enterAnswerWithKeypad(activeInput, expectedValue, activeContainer);
         }
 
