@@ -1487,11 +1487,18 @@ function waitForPostSubmitAction(timeout = 15000, interval = 200) {
 
 function findActionControlByText(text) {
   const expectedText = text.toLowerCase();
-  const selectors = ["button", "a", "[role='button']"];
-
-  return selectors
+  const selectors = [
+    "button",
+    "a",
+    "[role='button']",
+    "[tabindex]",
+    "[class*='Content']",
+    "[class*='Button']",
+    "[class*='button']",
+  ];
+  const candidates = selectors
     .flatMap((selector) => [...document.querySelectorAll(selector)])
-    .find((element) => {
+    .filter((element) => {
       const actualText = (element.innerText || element.textContent || "")
         .replace(/\s+/g, " ")
         .trim()
@@ -1500,7 +1507,27 @@ function findActionControlByText(text) {
       const visible = style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
       return visible && !element.disabled && element.getAttribute("aria-disabled") !== "true" &&
         (actualText === expectedText || actualText.startsWith(`${expectedText} `));
-    }) || null;
+    });
+
+  candidates.sort((first, second) => {
+    const firstText = (first.innerText || first.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const secondText = (second.innerText || second.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const firstExact = firstText === expectedText;
+    const secondExact = secondText === expectedText;
+    return Number(secondExact) - Number(firstExact) || firstText.length - secondText.length;
+  });
+
+  for (const candidate of candidates) {
+    const interactiveAncestor = candidate.closest("button, a, [role='button'], [tabindex]");
+    const target = interactiveAncestor || candidate;
+    const style = window.getComputedStyle(target);
+    const visible = style.display !== "none" && style.visibility !== "hidden" && target.getClientRects().length > 0;
+    if (visible && !target.disabled && target.getAttribute("aria-disabled") !== "true") {
+      return target;
+    }
+  }
+
+  return null;
 }
 
 function waitForActionControl(text, timeout = 4000, interval = 200) {
@@ -1536,10 +1563,15 @@ async function clickSummaryAndNextTask() {
 async function clickKeepGoing() {
   const keepGoingControl = await waitForActionControl("keep going", 2500);
   if (!keepGoingControl) {
+    console.warn("[SparxSolver] Keep Going text was not found on a visible action element.");
     return false;
   }
 
-  console.log("[SparxSolver] Keep Going control found; continuing.");
+  console.info("[SparxSolver] Clicking Keep Going action target:", {
+    tag: keepGoingControl.tagName,
+    className: String(keepGoingControl.className || ""),
+    text: (keepGoingControl.innerText || keepGoingControl.textContent || "").trim(),
+  });
   keepGoingControl.click();
   return true;
 }
@@ -1575,22 +1607,7 @@ function clickBookworkDidntPrompt() {
 }
 
 function findLinkWithNestedText(text) {
-  const candidateSelectors = [
-    "button",
-    "a",
-    "div[role='button']",
-    "[role='button']",
-    "div",
-  ];
-
-  console.log(`[SparxSolver] Finding, ${text}, control...`);
-
-  return candidateSelectors
-    .flatMap(selector => [...document.querySelectorAll(selector)])
-    .find((element) => {
-      const normalizedText = (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-      return normalizedText === text.toLowerCase() || normalizedText.startsWith(text.toLowerCase());
-    }) || null;
+  return findActionControlByText(text);
 }
 
 function findKeepGoingLink() {
