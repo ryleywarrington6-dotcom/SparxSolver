@@ -1398,6 +1398,29 @@ async function handleMultipleChoiceAnswer(item, dynamicAnswer) {
 
 
 
+function parseLinearEquationForTwoNumericFields(finalAnswer, answerItems) {
+  const numericItems = answerItems.filter((item) => item.type === "numeric");
+  if (numericItems.length !== 2 || numericItems.length !== answerItems.length) return null;
+
+  const normalizedAnswer = String(finalAnswer)
+    .replace(/\$/g, "")
+    .replace(/\\(?:left|right)\b/g, "")
+    .replace(/\s+/g, "")
+    .replace(/[·×]/g, "*");
+  const match = normalizedAnswer.match(/^y=(.*?)x([+-](?:\d+(?:\.\d+)?|\.\d+))$/i);
+  if (!match) return null;
+
+  let coefficient = match[1].replace(/(?:\\times|\\cdot|\*)$/i, "");
+  if (coefficient === "") coefficient = "1";
+  if (coefficient === "-") coefficient = "-1";
+  if (coefficient === "+") coefficient = "1";
+
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(coefficient)) return null;
+  if (coefficient.startsWith("+")) coefficient = coefficient.slice(1);
+  const intercept = match[2].startsWith("+") ? match[2].slice(1) : match[2];
+  return [coefficient, intercept];
+}
+
 async function typeAnswer(finalAnswer) {
   const answerItems = getOrderedAnswerItems();
   console.log(answerItems);
@@ -1429,6 +1452,11 @@ async function typeAnswer(finalAnswer) {
     .replace(/^\$|\$$/g, "")
     .split(/\s*,\s*/)
     .filter(Boolean);
+  const linearEquationParts = parseLinearEquationForTwoNumericFields(finalAnswer, answerItems);
+  if (linearEquationParts) {
+    console.info("[SparxSolver] Converted linear equation to coefficient/intercept blank values:", linearEquationParts);
+    answerParts.splice(0, answerParts.length, ...linearEquationParts);
+  }
   const hasOneAnswerPerNumericField = numericItemCount === answerItems.length &&
     answerParts.length === numericItemCount;
 
