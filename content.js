@@ -196,7 +196,7 @@ function clickAnswerButton() {
   return true;
 }
 
-function getOrderedAnswerItems() {
+function getOrderedAnswerItems(log = true) {
   let answerParts = [
     ...document.querySelectorAll("[class*='AnswerPart']")
   ];
@@ -206,12 +206,12 @@ function getOrderedAnswerItems() {
   if (answerParts.length === 0) {
     const mainContainer = document.querySelector("div[class*='QuestionWrapper']");
     if (mainContainer) {
-      console.log("[SparxSolver] No AnswerPart elements found. Using main QuestionWrapper container.");
+      if (log) console.log("[SparxSolver] No AnswerPart elements found. Using main QuestionWrapper container.");
       answerParts = [mainContainer];
     }
   }
 
-  console.log("answerParts", answerParts);
+  if (log) console.log("answerParts", answerParts);
 
   for (const part of answerParts) {
     const numericInputs = [
@@ -1386,6 +1386,12 @@ async function runAutoSolvePageFlow(finalAnswer) {
     return false; // Exit safely, doing nothing
   }
 
+  if (!(await waitForAnswerControls())) {
+    console.error("[SparxSolver] Answer controls did not appear before the auto-solve timeout.");
+    handleAutoSolveFailure();
+    return false;
+  }
+
   const answerButton = findAnswerButton();
   if (answerButton) {
     answerButton.click();
@@ -1777,6 +1783,42 @@ async function runAutoSolvePageFlow(finalAnswer) {
     );
   }
 
+  function hasVisibleAnswerControls() {
+    const isVisible = (element) => {
+      if (!element?.isConnected || !element.getClientRects().length) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden";
+    };
+
+    if (findActionControlByText("answer")) return true;
+
+    return getOrderedAnswerItems(false).some((item) => {
+      const candidates = [
+        item.input,
+        item.target,
+        item.slot,
+        ...(item.choices || []),
+      ];
+      return candidates.some(isVisible);
+    });
+  }
+
+  function waitForAnswerControls(timeout = 30000, interval = 250) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const check = () => {
+        if (hasVisibleAnswerControls()) {
+          resolve(true);
+        } else if (Date.now() - startedAt >= timeout) {
+          resolve(false);
+        } else {
+          setTimeout(check, interval);
+        }
+      };
+      check();
+    });
+  }
+
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "getQuestionText") {
       const questionEl = findQuestionContentElement();
@@ -1794,7 +1836,12 @@ async function runAutoSolvePageFlow(finalAnswer) {
 
     if (request.action === "captureQuestionScreenshot") {
       // Dynamically load html2canvas if not present
-      function doScreenshot() {
+      async function doScreenshot() {
+        if (!(await waitForAnswerControls())) {
+          sendResponse({ error: "The question is still loading or has no visible answer controls. Please wait for the answer area and try again." });
+          return;
+        }
+
         const questionEl = findQuestionContentElement();
         if (!questionEl) {
           sendResponse({ error: "Question element not found." });
