@@ -1671,14 +1671,8 @@ function waitForActionControl(text, timeout = 4000, interval = 200) {
   });
 }
 
-async function clickSummaryAndNextTask() {
-  const summaryControl = await waitForActionControl("summary", 2500);
-  if (summaryControl) {
-    console.log("[SparxSolver] Summary control found; opening summary.");
-    summaryControl.click();
-  }
-
-  const nextTaskControl = await waitForActionControl("next task", summaryControl ? 10000 : 2500);
+async function clickNextTask() {
+  const nextTaskControl = await waitForActionControl("next task", 2500);
   if (nextTaskControl) {
     console.log("[SparxSolver] Next task control found; continuing.");
     nextTaskControl.click();
@@ -1897,18 +1891,18 @@ async function runAutoSolvePageFlow(finalAnswer) {
     console.log("[SparxSolver] Continue link found.");
     postSubmitAction.control.click();
     await clickKeepGoing();
-    await clickSummaryAndNextTask();
+    await clickNextTask();
   } else if (postSubmitAction?.type === "keep-going") {
     console.log("[SparxSolver] Keep Going control found.");
     const clickedKeepGoing = await clickKeepGoing(postSubmitAction.control);
-    const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+    const advanced = await clickNextTask() || clickedKeepGoing;
     if (!advanced) {
       handleAutoSolveFailure();
       return;
     }
   } else {
     const clickedKeepGoing = await clickKeepGoing();
-    const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+    const advanced = await clickNextTask() || clickedKeepGoing;
     if (!advanced) {
       handleAutoSolveFailure();
       return;
@@ -2088,18 +2082,18 @@ async function runAutoSolvePageFlow(finalAnswer) {
         console.log("[SparxSolver] Continue link found. Proceeding to next screen.");
         postSubmitAction.control.click();
         await clickKeepGoing();
-        await clickSummaryAndNextTask();
+        await clickNextTask();
       } else if (postSubmitAction?.type === "keep-going") {
         console.log("[SparxSolver] Keep Going control found.");
         const clickedKeepGoing = await clickKeepGoing(postSubmitAction.control);
-        const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+        const advanced = await clickNextTask() || clickedKeepGoing;
         if (!advanced) {
           console.warn("[SparxSolver] Keep Going prompt remained active; stopping bookwork navigation.");
           return;
         }
       } else {
         const clickedKeepGoing = await clickKeepGoing();
-        const advanced = await clickSummaryAndNextTask() || clickedKeepGoing;
+        const advanced = await clickNextTask() || clickedKeepGoing;
         if (advanced) return;
         console.warn("[SparxSolver] No Continue, Summary, or Next task control appeared after Bookwork submit.");
       }
@@ -2363,27 +2357,46 @@ async function runAutoSolvePageFlow(finalAnswer) {
           return;
         }
         const answerLayout = describeAnswerLayout();
-        window
-          .html2canvas(questionEl, {
+        const [questionCanvas, viewportCanvas] = await Promise.all([
+          window.html2canvas(questionEl, {
             scale: window.devicePixelRatio * 2,
             useCORS: true,
             allowTaint: true,
-          })
-          .then((canvas) => {
-            const dataUrl = canvas.toDataURL();
-            sendResponse({ dataUrl, answerLayout });
-          })
-          .catch((e) => {
-            sendResponse({ error: e.message });
-          });
+          }),
+          window.html2canvas(document.documentElement, {
+            x: window.scrollX,
+            y: window.scrollY,
+            width: window.innerWidth,
+            height: window.innerHeight,
+            windowWidth: window.innerWidth,
+            windowHeight: window.innerHeight,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            scale: Math.min(window.devicePixelRatio || 1, 1.5),
+            useCORS: true,
+            allowTaint: true,
+          }),
+        ]);
+        sendResponse({
+          dataUrl: questionCanvas.toDataURL(),
+          viewportDataUrl: viewportCanvas.toDataURL(),
+          answerLayout,
+        });
       }
+
+      const handleScreenshotError = (error) => {
+        console.error("[SparxSolver] Question/answer screenshot failed:", error);
+        sendResponse({ error: error.message || "Could not capture the question and answer page." });
+      };
+
       if (window.html2canvas) {
-        doScreenshot();
+        doScreenshot().catch(handleScreenshotError);
       } else {
         // Inject html2canvas if not present
         const script = document.createElement("script");
         script.src = chrome.runtime.getURL("libs/html2canvas.min.js");
-        script.onload = doScreenshot;
+        script.onload = () => doScreenshot().catch(handleScreenshotError);
+        script.onerror = () => handleScreenshotError(new Error("Could not load screenshot support."));
         document.head.appendChild(script);
       }
       return true; // Keep channel open for async response

@@ -420,6 +420,8 @@ chrome.runtime.onConnect.addListener(function (port) {
           }
           const dataUrl = dataUrlResponse.dataUrl;
           const base64ImageData = dataUrl.split(",")[1];
+          const viewportDataUrl = dataUrlResponse.viewportDataUrl || dataUrlResponse.dataUrl;
+          const base64ViewportImageData = viewportDataUrl.split(",")[1];
 
           const detailedPrompt = await loadSystemPrompt();
 
@@ -445,7 +447,13 @@ chrome.runtime.onConnect.addListener(function (port) {
                   content: [
                     {
                       type: "text",
-                      text: `Analyze the question and answer-entry interface in the attached image. Detected answer layout, in DOM order: ${JSON.stringify(dataUrlResponse.answerLayout || [])}. Use the image and this layout together; provide one exact, box-ready expression for each answer blank in the listed order.`,
+                      text: `Analyze both attached screenshots: the first is the full visible page including its answer-entry interface and keypad; the second is a focused question-and-answer crop. Also use this detected answer layout in DOM order: ${JSON.stringify(dataUrlResponse.answerLayout || [])}. Determine which keys/slots are available and map one exact, box-ready expression to each blank in order.`,
+                    },
+                    {
+                      type: "image_url",
+                      image_url: {
+                        url: `data:image/png;base64,${base64ViewportImageData}`,
+                      },
                     },
                     {
                       type: "image_url",
