@@ -964,32 +964,65 @@ async function clickIntoInput(input) {
 async function typeIntoNumericInput(input, value) {
   await clickIntoInput(input);
   const expectedValue = String(value);
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    Object.getPrototypeOf(input),
-    "value"
-  )?.set;
-
-  if (!valueSetter) {
-    throw new Error("Could not find the native value setter for the answer field.");
+  let prototype = input;
+  let valueSetter = null;
+  while (prototype && !valueSetter) {
+    valueSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    prototype = Object.getPrototypeOf(prototype);
   }
 
-  valueSetter.call(input, expectedValue);
+  if (valueSetter) {
+    valueSetter.call(input, expectedValue);
+  } else if (input.isContentEditable || input.getAttribute("role") === "textbox") {
+    input.textContent = expectedValue;
+  } else {
+    throw new Error("No supported value setter found for the answer field.");
+  }
+
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
-  await sleep(50);
+  await sleep(120);
 
-  if (input.value !== expectedValue) {
-    throw new Error(`Answer field did not accept the value ${expectedValue}.`);
-  }
+  return "value" in input
+    ? String(input.value)
+    : String(input.textContent || "").trim();
 }
 
-async function typeNumericInput(input, value) {
-  if (value == null) {
-    return;
+async function typeNumericInput(input, value, fieldIndex = 0) {
+  if (value == null) return false;
+
+  const expectedValue = String(value);
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const refreshedFields = getOrderedAnswerItems(false)
+      .filter((item) => item.type === "numeric");
+    const activeInput = refreshedFields[fieldIndex]?.input ||
+      (input.isConnected ? input : null);
+
+    if (!activeInput) {
+      console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} is missing on attempt ${attempt}/${maxAttempts}.`);
+    } else {
+      console.info(`[SparxSolver] Entering numeric field ${fieldIndex + 1}, attempt ${attempt}/${maxAttempts}: ${expectedValue}`);
+      try {
+        const actualValue = await typeIntoNumericInput(activeInput, expectedValue);
+        if (actualValue === expectedValue) {
+          console.info(`[SparxSolver] Verified numeric field ${fieldIndex + 1}: ${actualValue}`);
+          return true;
+        }
+        console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} verification mismatch: expected "${expectedValue}", got "${actualValue}".`);
+      } catch (error) {
+        console.warn(`[SparxSolver] Numeric field ${fieldIndex + 1} attempt ${attempt} failed:`, error);
+      }
+    }
+
+    if (attempt < maxAttempts) {
+      await sleep(attempt * 300);
+    }
   }
-  console.log("Typing", value, input);
-  await typeIntoNumericInput(input, value);
-  
+
+  console.error(`[SparxSolver] Could not verify numeric field ${fieldIndex + 1} after ${maxAttempts} attempts.`);
+  return false;
 }
 
 /**
@@ -1107,20 +1140,23 @@ async function typeAnswer(finalAnswer) {
   }
 
   let dynamicAnswer = finalAnswer;
+  let numericFieldIndex = 0;
 
   for (const item of answerItems) {
     switch (item.type) {
       case "numeric": {
         const { value, remaining } = extractAndConsumeNumeric(dynamicAnswer);
+        const currentFieldIndex = numericFieldIndex++;
 
         if (!value) {
-          console.warn("[SparxSolver] Missing numeric value in remaining text:", dynamicAnswer);
-          continue;
+          console.error(`[SparxSolver] No numeric value found for field ${currentFieldIndex + 1}. Remaining answer:`, dynamicAnswer);
+          return false;
         }
 
-        await typeNumericInput(item.input, value);
+        const enteredAndVerified = await typeNumericInput(item.input, value, currentFieldIndex);
+        if (!enteredAndVerified) return false;
         dynamicAnswer = remaining;
-        console.log("[SparxSolver] Consumed numeric value. Remaining window:", dynamicAnswer);
+        console.info(`[SparxSolver] Field ${currentFieldIndex + 1} verified; remaining answer text:`, dynamicAnswer);
         break;
       }
 
