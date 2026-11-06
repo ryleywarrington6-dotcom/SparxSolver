@@ -351,9 +351,12 @@ chrome.runtime.onConnect.addListener(function (port) {
               model: modelToTry,
               messages: [
                 {
+                  role: "system",
+                  content: detailedPrompt,
+                },
+                {
                   role: "user",
                   content: [
-                    { type: "text", text: detailedPrompt },
                     {
                       type: "image_url",
                       image_url: {
